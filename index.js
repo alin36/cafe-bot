@@ -1,21 +1,20 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const express = require('express');
 
-// Express Server (Required later for 24/7 cloud hosting)
+// Express Keep-Alive Server
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 app.get('/', (req, res) => res.send('Bot is running!'));
-app.listen(PORT, () => console.log(`Keep-alive server on port ${PORT}`));
+app.listen(PORT, () => console.log(`Keep-alive server active on port ${PORT}`));
 
-// Discord Bot Initialization
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Channel, Partials.Message],
 });
 
 const ESMBOT_ID = '517371092700364808';
@@ -24,37 +23,73 @@ client.once('ready', () => {
   console.log(`LoggedIn as: ${client.user.tag}`);
 });
 
-client.on('messageCreate', async (message) => {
-  if (message.author.id === client.user.id) return;
+// Helper function to extract and forward media from esmBot
+async function processAndForward(message) {
+  // Ignore messages from ourselves
+  if (message.author?.id === client.user.id) return;
 
-  const isEsmBot = message.author.id === ESMBOT_ID;
-  const isGifCommand = 
-    (message.interaction && message.interaction.commandName === 'gif') ||
-    (message.reference && message.content.includes('/gif'));
+  const isEsmBot = message.author?.id === ESMBOT_ID || message.author?.username.toLowerCase().includes('esmbot');
+  if (!isEsmBot) return;
 
-  if (isEsmBot || isGifCommand) {
-    try {
-      const targetChannel = await client.channels.fetch(process.env.TARGET_CHANNEL_ID);
-      if (!targetChannel) return;
+  console.log(`--- ESMBOT MESSAGE DETECTED (${message.editedTimestamp ? 'EDITED' : 'NEW'}) ---`);
 
-      const files = message.attachments.map(a => a.url);
-      const embedImages = message.embeds
-        .map(e => e.image?.url || e.thumbnail?.url)
-        .filter(Boolean);
+  // 1. Collect Attachments
+  const attachments = message.attachments.map(a => a.url);
 
-      const mediaLinks = [...files, ...embedImages];
-
-      if (mediaLinks.length > 0 || message.content) {
-        await targetChannel.send({
-          content: `Forwarded from <#${message.channel.id}>:`,
-          files: mediaLinks,
-        });
-        console.log('GIF forwarded!');
+  // 2. Collect Embed Images, Thumbnails, and Video/GIF links
+  const embedMedia = [];
+  if (message.embeds && message.embeds.length > 0) {
+    for (const embed of message.embeds) {
+      if (embed.image?.url) embedMedia.push(embed.image.url);
+      if (embed.thumbnail?.url) embedMedia.push(embed.thumbnail.url);
+      if (embed.video?.url) embedMedia.push(embed.video.url);
+      if (embed.url && (embed.url.includes('.gif') || embed.url.includes('.png') || embed.url.includes('.webp'))) {
+        embedMedia.push(embed.url);
       }
-    } catch (err) {
-      console.error('Error forwarding message:', err);
     }
   }
+
+  // Combine and remove duplicates
+  const mediaLinks = [...new Set([...attachments, ...embedMedia])];
+  console.log(`Media found: ${mediaLinks.length} items`);
+
+  // If no media found yet, wait briefly (esmBot might still be assembling payload)
+  if (mediaLinks.length === 0) {
+    console.log('No media found in this event. Waiting for message edit...');
+    return;
+  }
+
+  try {
+    const targetChannel = client.channels.cache.get(process.env.TARGET_CHANNEL_ID) 
+      || await client.channels.fetch(process.env.TARGET_CHANNEL_ID);
+
+    if (!targetChannel) {
+      console.error('CRITICAL: Target channel not found!');
+      return;
+    }
+
+    console.log(`Sending GIF to #${targetChannel.name}...`);
+
+    await targetChannel.send({
+      content: `Forwarded GIF from <#${message.channel.id}>:\n${mediaLinks.join('\n')}`,
+    });
+
+    console.log('SUCCESS: GIF successfully forwarded!');
+  } catch (err) {
+    console.error('ERROR during forwarding:', err.message || err);
+  }
+}
+
+// Event 1: New Messages
+client.on('messageCreate', async (message) => {
+  await processAndForward(message);
+});
+
+// Event 2: Message Edits (Crucial for esmBot finished responses)
+client.on('messageUpdate', async (oldMessage, newMessage) => {
+  // If the message wasn't fully cached, fetch the complete updated message
+  const fullMessage = newMessage.partial ? await newMessage.fetch() : newMessage;
+  await processAndForward(fullMessage);
 });
 
 client.login(process.env.DISCORD_TOKEN);
