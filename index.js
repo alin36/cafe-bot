@@ -28,7 +28,12 @@ async function processAndForward(message) {
   // Ignore messages from ourselves
   if (message.author?.id === client.user.id) return;
 
-  const isEsmBot = message.author?.id === ESMBOT_ID || message.author?.username.toLowerCase().includes('esmbot');
+  // Check if message comes from esmBot (by ID, username, or webhook)
+  const isEsmBot = 
+    message.author?.id === ESMBOT_ID || 
+    (message.author?.bot && message.author?.username.toLowerCase().includes('esmbot')) ||
+    (message.webhookId && message.author?.username.toLowerCase().includes('esmbot'));
+
   if (!isEsmBot) return;
 
   console.log(`--- ESMBOT MESSAGE DETECTED (${message.editedTimestamp ? 'EDITED' : 'NEW'}) ---`);
